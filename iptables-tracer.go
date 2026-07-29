@@ -10,8 +10,10 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"regexp"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/florianl/go-nflog/v2"
@@ -101,7 +103,10 @@ func main() {
 	}
 	defer nf.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), *traceDuration)
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
+	ctx, cancel := context.WithTimeout(signalCtx, *traceDuration)
 	defer cancel()
 
 	msgChannel := make(chan msg)
