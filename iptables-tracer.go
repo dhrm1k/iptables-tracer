@@ -169,6 +169,9 @@ func main() {
 	}()
 
 	errorFunc := func(err error) int {
+		if ctx.Err() != nil {
+			return 1
+		}
 		if opError, ok := err.(*netlink.OpError); ok {
 			if opError.Timeout() || opError.Temporary() {
 				return 0
