@@ -47,6 +47,7 @@ var (
 	packetGap      = flag.Duration("g", 10*time.Millisecond, "output empty line when two loglines are separated by at least this duration")
 	nflogGroup     = flag.Int("n", 22, "NFLOG group number to use")
 	traceFilter    = flag.String("f", "-p udp --dport 53", "trace filter (iptables match syntax)")
+	traceHost      = flag.String("host", "", "trace traffic to and from this IP address")
 	traceID        = flag.Int("i", 0, "trace id (0 = use PID)")
 	traceRules     = flag.Bool("r", false, "trace rules in addition to chains (experimental, currently broken!)")
 	clearRules     = flag.Bool("c", false, "clear all iptables-tracer iptables rules from running config")
@@ -84,8 +85,23 @@ func main() {
 		log.Fatal("Error: limit or trace rules requires fwmark")
 	}
 
+	filterExplicit := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "f" {
+			filterExplicit = true
+		}
+	})
+	filter := *traceFilter
+	if *traceHost != "" && !filterExplicit {
+		filter = ""
+	}
+	traceFilters, err := buildTraceFilters(*traceHost, filter, *ip6tables)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	lines := iptablesSave()
-	newIptablesConfig, ruleMap, maxLength := extendIptablesPolicy(lines, *traceID, *traceFilter, *fwMark, *packetLimit, *traceRules, *nflogGroup)
+	newIptablesConfig, ruleMap, maxLength := extendIptablesPolicyFilters(lines, *traceID, traceFilters, *fwMark, *packetLimit, *traceRules, *nflogGroup)
 	iptablesRestore(newIptablesConfig)
 
 	defer cleanupIptables(*traceID)
@@ -194,6 +210,28 @@ func main() {
 	// block until context expires
 	<-ctx.Done()
 	close(msgChannel)
+}
+
+func buildTraceFilters(host, filter string, ipv6 bool) ([]string, error) {
+	if host == "" {
+		return []string{filter}, nil
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid host IP address %q", host)
+	}
+	if ipv6 && ip.To4() != nil {
+		return nil, fmt.Errorf("host %q is IPv4; remove -6 or use an IPv6 address", host)
+	}
+	if !ipv6 && ip.To4() == nil {
+		return nil, fmt.Errorf("host %q is IPv6; add -6 to trace it", host)
+	}
+
+	if filter != "" {
+		filter = " " + filter
+	}
+	return []string{"-s " + host + filter, "-d " + host + filter}, nil
 }
 
 func printRule(maxLength int, ts time.Time, rule iptablesRule, fwMark uint32, iif, oif string, payload, ct []byte, ctInfo uint32) {

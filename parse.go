@@ -19,6 +19,10 @@ var (
 )
 
 func extendIptablesPolicy(lines []string, traceID int, traceFilter string, fwMark, packetLimit int, traceRules bool, nflogGroup int) ([]string, map[int]iptablesRule, int) {
+	return extendIptablesPolicyFilters(lines, traceID, []string{traceFilter}, fwMark, packetLimit, traceRules, nflogGroup)
+}
+
+func extendIptablesPolicyFilters(lines []string, traceID int, traceFilters []string, fwMark, packetLimit int, traceRules bool, nflogGroup int) ([]string, map[int]iptablesRule, int) {
 	var newIptablesConfig []string
 	maxChainNameLength := 0
 	ruleMap := make(map[int]iptablesRule)
@@ -44,12 +48,14 @@ func extendIptablesPolicy(lines []string, traceID int, traceFilter string, fwMar
 		if res := commitRe.FindStringSubmatch(line); res != nil {
 			// we are at the end of a table, add aritificial rules for all chains in this table
 			for _, chain := range chainMap[table] {
-				ruleMap[ruleIndex] = iptablesRule{Table: table, Chain: chain, ChainEntry: true}
-				traceRule := buildTraceRule("-I", chain, []string{traceFilter, markFilter}, traceID, ruleIndex, nflogGroup)
-				ruleIndex++
-				newIptablesConfig = append(newIptablesConfig, traceRule)
-				if table == "raw" && chain == "PREROUTING" && (packetLimit != 0 || traceRules) {
-					newIptablesConfig = append(newIptablesConfig, buildMarkRule("-I", chain, traceFilter, traceID, packetLimit, fwMark))
+				for _, traceFilter := range traceFilters {
+					ruleMap[ruleIndex] = iptablesRule{Table: table, Chain: chain, ChainEntry: true}
+					traceRule := buildTraceRule("-I", chain, []string{traceFilter, markFilter}, traceID, ruleIndex, nflogGroup)
+					ruleIndex++
+					newIptablesConfig = append(newIptablesConfig, traceRule)
+					if table == "raw" && chain == "PREROUTING" && (packetLimit != 0 || traceRules) {
+						newIptablesConfig = append(newIptablesConfig, buildMarkRule("-I", chain, traceFilter, traceID, packetLimit, fwMark))
+					}
 				}
 			}
 		}
