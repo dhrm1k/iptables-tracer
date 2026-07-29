@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run tests
+        run: go test -race ./...
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Build Linux x86-64 binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o iptables-tracer.amd64 .
+
+      - name: Upload Linux x86-64 binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: iptables-tracer-linux-amd64
+          path: iptables-tracer.amd64
+          if-no-files-found: error
+          retention-days: 14

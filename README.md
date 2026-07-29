@@ -1,7 +1,6 @@
 # iptables-tracer
-[![CircleCI](https://circleci.com/gh/x-way/iptables-tracer/tree/master.svg?style=svg)](https://circleci.com/gh/x-way/iptables-tracer/tree/master)
-[![Go Report Card](https://goreportcard.com/badge/github.com/x-way/iptables-tracer)](https://goreportcard.com/report/github.com/x-way/iptables-tracer)
-[![Codecov](https://codecov.io/gh/x-way/iptables-tracer/branch/master/graph/badge.svg)](https://codecov.io/gh/x-way/iptables-tracer/)
+[![CI](https://github.com/dhrm1k/iptables-tracer/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/dhrm1k/iptables-tracer/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/dhrm1k/iptables-tracer)](https://goreportcard.com/report/github.com/dhrm1k/iptables-tracer)
 
 Insert trace-points into the running configuration to observe the path of packets through the iptables chains.
 
