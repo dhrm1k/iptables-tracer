@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -61,7 +63,13 @@ var (
 
 func main() {
 	flag.Parse()
+	if err := run(); err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+}
 
+func run() error {
 	if *ip6tables {
 		saveCommand = "ip6tables-save"
 		restoreCommand = "ip6tables-restore"
@@ -70,19 +78,16 @@ func main() {
 		restoreCommand = "iptables-restore"
 	}
 
-	var err error
-
 	if *traceID == 0 {
 		*traceID = os.Getpid()
 	}
 
 	if *clearRules {
-		cleanupIptables(0) // 0 -> clear all IDs
-		return
+		return cleanupIptables(0) // 0 -> clear all IDs
 	}
 
 	if (*packetLimit != 0 || *traceRules) && *fwMark == 0 {
-		log.Fatal("Error: limit or trace rules requires fwmark")
+		return errors.New("limit or trace rules requires fwmark")
 	}
 
 	filterExplicit := false
@@ -97,27 +102,44 @@ func main() {
 	}
 	traceFilters, err := buildTraceFilters(*traceHost, filter, *ip6tables)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
-	lines := iptablesSave()
+	lines, err := iptablesSave()
+	if err != nil {
+		return err
+	}
 	newIptablesConfig, ruleMap, maxLength := extendIptablesPolicyFilters(lines, *traceID, traceFilters, *fwMark, *packetLimit, *traceRules, *nflogGroup)
-	iptablesRestore(newIptablesConfig)
+	if err := iptablesRestore(newIptablesConfig); err != nil {
+		return err
+	}
 
-	defer cleanupIptables(*traceID)
+	return withCleanup(
+		func() error { return runNflog(ruleMap, maxLength) },
+		func() error { return cleanupIptables(*traceID) },
+	)
+}
 
-	var nf *nflog.Nflog
+func withCleanup(run, cleanup func() error) (err error) {
+	defer func() {
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("clean up iptables rules: %w", cleanupErr))
+		}
+	}()
+	return run()
+}
+
+func runNflog(ruleMap map[int]iptablesRule, maxLength int) (retErr error) {
 	config := nflog.Config{
 		Group:       uint16(*nflogGroup),
 		Copymode:    nflog.CopyPacket,
 		Flags:       nflog.FlagConntrack,
 		ReadTimeout: time.Second,
 	}
-	nf, err = nflog.Open(&config)
+	nf, err := nflog.Open(&config)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("open NFLOG group %d: %w", *nflogGroup, err)
 	}
-	defer nf.Close()
 
 	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
@@ -126,6 +148,33 @@ func main() {
 	defer cancel()
 
 	msgChannel := make(chan msg)
+	var printerWG sync.WaitGroup
+	printerWG.Add(1)
+	go func() {
+		defer printerWG.Done()
+		var lastTime time.Time
+		for msg := range msgChannel {
+			if msg.Time.Sub(lastTime).Nanoseconds() > (*packetGap).Nanoseconds() && !lastTime.IsZero() {
+				fmt.Println("")
+			}
+			lastTime = msg.Time
+			printRule(maxLength, msg.Time, msg.Rule, msg.Mark, msg.Iif, msg.Oif, msg.Payload, msg.Ct, msg.CtInfo)
+			if *debugConntrack && len(msg.Ct) > 0 {
+				ctprint.Print(msg.Ct)
+			}
+		}
+	}()
+
+	defer func() {
+		cancel()
+		if err := nf.Close(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close NFLOG connection: %w", err))
+		}
+		close(msgChannel)
+		printerWG.Wait()
+	}()
+
+	receiveErr := make(chan error, 1)
 
 	callback := func(m nflog.Attribute) int {
 		var prefix string
@@ -175,20 +224,6 @@ func main() {
 		return 0
 	}
 
-	go func() {
-		var lastTime time.Time
-		for msg := range msgChannel {
-			if msg.Time.Sub(lastTime).Nanoseconds() > (*packetGap).Nanoseconds() && !lastTime.IsZero() {
-				fmt.Println("")
-			}
-			lastTime = msg.Time
-			printRule(maxLength, msg.Time, msg.Rule, msg.Mark, msg.Iif, msg.Oif, msg.Payload, msg.Ct, msg.CtInfo)
-			if *debugConntrack && len(msg.Ct) > 0 {
-				ctprint.Print(msg.Ct)
-			}
-		}
-	}()
-
 	errorFunc := func(err error) int {
 		if ctx.Err() != nil {
 			return 1
@@ -198,18 +233,26 @@ func main() {
 				return 0
 			}
 		}
-		log.Fatalf("Could not receive message: %v\n", err)
+		select {
+		case receiveErr <- fmt.Errorf("receive NFLOG message: %w", err):
+		default:
+		}
+		cancel()
 		return 1
 	}
 
 	err = nf.RegisterWithErrorFunc(ctx, callback, errorFunc)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("register NFLOG callback: %w", err)
 	}
 
-	// block until context expires
 	<-ctx.Done()
-	close(msgChannel)
+	select {
+	case err := <-receiveErr:
+		return err
+	default:
+		return nil
+	}
 }
 
 func buildTraceFilters(host, filter string, ipv6 bool) ([]string, error) {
@@ -261,10 +304,15 @@ func writeToCommand(cmd *exec.Cmd, lines []string) error {
 	}
 	for _, line := range lines {
 		if _, err := io.WriteString(cmdWriter, line+"\n"); err != nil {
-			log.Fatal(err)
+			_ = cmdWriter.Close()
+			_ = cmd.Wait()
+			return err
 		}
 	}
-	cmdWriter.Close()
+	if err := cmdWriter.Close(); err != nil {
+		_ = cmd.Wait()
+		return err
+	}
 	return cmd.Wait()
 }
 
@@ -291,28 +339,30 @@ func readFromCommand(cmd *exec.Cmd) ([]string, error) {
 	return lines, nil
 }
 
-func iptablesSave() []string {
-	var err error
-	var lines []string
-
-	if lines, err = readFromCommand(exec.Command(saveCommand)); err != nil {
-		log.Fatal(err)
+func iptablesSave() ([]string, error) {
+	lines, err := readFromCommand(exec.Command(saveCommand))
+	if err != nil {
+		return nil, fmt.Errorf("run %s: %w", saveCommand, err)
 	}
-
-	return lines
+	return lines, nil
 }
 
-func iptablesRestore(policy []string) {
+func iptablesRestore(policy []string) error {
 	if err := writeToCommand(exec.Command(restoreCommand, "-t"), policy); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("validate rules with %s: %w", restoreCommand, err)
 	}
 	if err := writeToCommand(exec.Command(restoreCommand), policy); err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("restore rules with %s: %w", restoreCommand, err)
 	}
+	return nil
 }
 
-func cleanupIptables(cleanupID int) {
-	iptablesRestore(clearIptablesPolicy(iptablesSave(), cleanupID))
+func cleanupIptables(cleanupID int) error {
+	policy, err := iptablesSave()
+	if err != nil {
+		return err
+	}
+	return iptablesRestore(clearIptablesPolicy(policy, cleanupID))
 }
 
 // GetIfaceName takes a network interface index and returns the corresponding name
