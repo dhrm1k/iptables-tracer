@@ -4,6 +4,17 @@
 
 Insert trace-points into the running configuration to observe the path of packets through the iptables chains.
 
+## Installation
+
+Download the latest Linux x86-64 release:
+
+```sh
+curl -fL https://github.com/dhrm1k/iptables-tracer/releases/latest/download/iptables-tracer.amd64 -o iptables-tracer
+chmod +x iptables-tracer
+```
+
+Release assets include `iptables-tracer.amd64.sha256` for checksum verification.
+
 ## Usage
 
 Trace packets in both directions for a host:
