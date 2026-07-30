@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -14,6 +15,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -51,7 +53,7 @@ var (
 	traceFilter    = flag.String("f", "-p udp --dport 53", "trace filter (iptables match syntax)")
 	traceHost      = flag.String("host", "", "trace traffic to and from this IP address")
 	traceID        = flag.Int("i", 0, "trace id (0 = use PID)")
-	traceRules     = flag.Bool("r", false, "trace rules in addition to chains (experimental, currently broken!)")
+	traceRules     = flag.Bool("r", false, "trace matching rules in addition to chain entries")
 	clearRules     = flag.Bool("c", false, "clear all iptables-tracer iptables rules from running config")
 	fwMark         = flag.Int("m", 0, "fwmark to use for packet tracking")
 	packetLimit    = flag.Int("l", 0, "limit of packets per minute to trace (0 = no limit)")
@@ -86,8 +88,11 @@ func run() error {
 		return cleanupIptables(0) // 0 -> clear all IDs
 	}
 
-	if (*packetLimit != 0 || *traceRules) && *fwMark == 0 {
-		return errors.New("limit or trace rules requires fwmark")
+	if *packetLimit != 0 && *fwMark == 0 {
+		return errors.New("packet limit requires fwmark")
+	}
+	if *traceRules && *fwMark == 0 && *traceHost == "" {
+		return errors.New("rule tracing requires --host or fwmark")
 	}
 
 	filterExplicit := false
@@ -286,15 +291,17 @@ func printRule(maxLength int, ts time.Time, rule iptablesRule, fwMark uint32, ii
 	}
 	ctStr := fmt.Sprintf(" %s 0x%08x", ctprint.InfoString(ctInfo), ctprint.GetCtMark(ct))
 	if rule.ChainEntry {
-		fmtStr := fmt.Sprintf("%%s %%-6s %%-%ds 0x%%08x%%s %%s  [In:%%s Out:%%s]\n", maxLength)
+		fmtStr := fmt.Sprintf("%%s %%-6s ENTER %%-%ds 0x%%08x%%s %%s  [In:%%s Out:%%s]\n", maxLength)
 		fmt.Printf(fmtStr, ts.Format("15:04:05.000000"), rule.Table, rule.Chain, fwMark, ctStr, packetStr, iif, oif)
 	} else {
-		fmtStr := fmt.Sprintf("%%s %%-6s %%-%ds %%s 0x%%08x%%s %%s  [In:%%s Out:%%s]\n", maxLength)
+		fmtStr := fmt.Sprintf("%%s %%-6s MATCH %%-%ds %%s 0x%%08x%%s %%s  [In:%%s Out:%%s]\n", maxLength)
 		fmt.Printf(fmtStr, ts.Format("15:04:05.000000"), rule.Table, rule.Chain, rule.Rule, fwMark, ctStr, packetStr, iif, oif)
 	}
 }
 
 func writeToCommand(cmd *exec.Cmd, lines []string) error {
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	cmdWriter, err := cmd.StdinPipe()
 	if err != nil {
 		return err
@@ -313,7 +320,13 @@ func writeToCommand(cmd *exec.Cmd, lines []string) error {
 		_ = cmd.Wait()
 		return err
 	}
-	return cmd.Wait()
+	if err := cmd.Wait(); err != nil {
+		if detail := strings.TrimSpace(stderr.String()); detail != "" {
+			return fmt.Errorf("%w: %s", err, detail)
+		}
+		return err
+	}
+	return nil
 }
 
 func readFromCommand(cmd *exec.Cmd) ([]string, error) {

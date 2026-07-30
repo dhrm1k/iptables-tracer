@@ -3,14 +3,14 @@ package ctprint
 
 import (
 	"fmt"
+	"io"
 	"log"
-	"os"
 	"strings"
 
 	conntrack "github.com/florianl/go-conntrack"
 )
 
-var stdOutLogger = log.New(os.Stdout, "", log.LstdFlags)
+var parserLogger = log.New(io.Discard, "", 0)
 
 // Print parses the conntrack info from NFLOG and prints a textual representation of the contained conntrack attributes
 func Print(ctbytes []byte) {
@@ -23,7 +23,7 @@ func Print(ctbytes []byte) {
 
 // Format parses the conntrack info from NFLOG and returns a textual representation of the contained conntrack attributes
 func Format(ctbytes []byte) (string, error) {
-	connection, err := conntrack.ParseAttributes(stdOutLogger, ctbytes)
+	connection, err := conntrack.ParseAttributes(parserLogger, ctbytes)
 	if err != nil {
 		return "", err
 	}
@@ -242,7 +242,7 @@ func InfoString(ctinfo uint32) string {
 
 // GetCtMark parses the conntrack info from NFLOG and extracts the connmark
 func GetCtMark(data []byte) uint32 {
-	if connection, err := conntrack.ParseAttributes(stdOutLogger, data); err == nil {
+	if connection, err := conntrack.ParseAttributes(parserLogger, data); err == nil {
 		if connection.Mark != nil {
 			return *connection.Mark
 		}

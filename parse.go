@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -53,7 +54,7 @@ func extendIptablesPolicyFilters(lines []string, traceID int, traceFilters []str
 					traceRule := buildTraceRule("-I", chain, []string{traceFilter, markFilter}, traceID, ruleIndex, nflogGroup)
 					ruleIndex++
 					newIptablesConfig = append(newIptablesConfig, traceRule)
-					if table == "raw" && chain == "PREROUTING" && (packetLimit != 0 || traceRules) {
+					if table == "raw" && chain == "PREROUTING" && fwMark != 0 && (packetLimit != 0 || traceRules) {
 						newIptablesConfig = append(newIptablesConfig, buildMarkRule("-I", chain, traceFilter, traceID, packetLimit, fwMark))
 					}
 				}
@@ -66,13 +67,26 @@ func extendIptablesPolicyFilters(lines []string, traceID int, traceFilters []str
 			if table == "" {
 				log.Fatal("Error: found rule definition before initial table definition")
 			}
-			if resolvedRuleFilter, ok := resolveRuleFilterAndMergeMark(res[2], fwMark); !ok {
-				log.Fatalf("Error: fwMark conflicts with the rule: %s, choose another proper value", line)
+			if fwMark == 0 {
+				for _, traceFilter := range traceFilters {
+					resolvedFilter, ok := resolveHostRuleFilter(traceFilter, ruleMatchFilter(res[2]))
+					if !ok {
+						continue
+					}
+					ruleMap[ruleIndex] = iptablesRule{Table: table, Chain: res[1], Rule: res[2]}
+					traceRule := buildTraceRule("-A", res[1], []string{resolvedFilter}, traceID, ruleIndex, nflogGroup)
+					ruleIndex++
+					newIptablesConfig = append(newIptablesConfig, traceRule)
+				}
 			} else {
-				ruleMap[ruleIndex] = iptablesRule{Table: table, Chain: res[1], Rule: res[2]}
-				traceRule := buildTraceRule("-A", res[1], resolvedRuleFilter, traceID, ruleIndex, nflogGroup)
-				ruleIndex++
-				newIptablesConfig = append(newIptablesConfig, traceRule)
+				if resolvedRuleFilter, ok := resolveRuleFilterAndMergeMark(res[2], fwMark); !ok {
+					log.Fatalf("Error: fwMark conflicts with the rule: %s, choose another proper value", line)
+				} else {
+					ruleMap[ruleIndex] = iptablesRule{Table: table, Chain: res[1], Rule: res[2]}
+					traceRule := buildTraceRule("-A", res[1], resolvedRuleFilter, traceID, ruleIndex, nflogGroup)
+					ruleIndex++
+					newIptablesConfig = append(newIptablesConfig, traceRule)
+				}
 			}
 		}
 		newIptablesConfig = append(newIptablesConfig, line)
@@ -123,6 +137,69 @@ func buildTraceRule(command, chain string, filter []string, traceID, ruleIndex, 
 	}
 	rule = append(rule, fmt.Sprintf("-j NFLOG --nflog-prefix \"iptr:%d:%d\" --nflog-group %d", traceID, ruleIndex, nflogGroup))
 	return strings.Join(rule, " ")
+}
+
+func resolveHostRuleFilter(traceFilter, ruleFilter string) (string, bool) {
+	traceFields := strings.Fields(traceFilter)
+	ruleFields := strings.Fields(ruleFilter)
+	for _, selector := range []string{"-s", "-d", "-p"} {
+		traceValue, traceIndex, traceNegated := findSelector(traceFields, selector)
+		if traceIndex < 0 || traceNegated {
+			continue
+		}
+		ruleValue, _, ruleNegated := findSelector(ruleFields, selector)
+		if ruleValue == "" {
+			continue
+		}
+
+		matches := selectorValuesIntersect(selector, traceValue, ruleValue)
+		if ruleNegated {
+			matches = !matches
+		}
+		if !matches {
+			return "", false
+		}
+		if !ruleNegated {
+			traceFields = append(traceFields[:traceIndex], traceFields[traceIndex+2:]...)
+		}
+	}
+	return strings.TrimSpace(strings.Join(append(traceFields, ruleFilter), " ")), true
+}
+
+func findSelector(fields []string, selector string) (string, int, bool) {
+	aliases := map[string]string{"--source": "-s", "--destination": "-d", "--protocol": "-p"}
+	for i, field := range fields {
+		if alias, ok := aliases[field]; ok {
+			field = alias
+		}
+		if field == selector && i+1 < len(fields) {
+			return fields[i+1], i, i > 0 && fields[i-1] == "!"
+		}
+	}
+	return "", -1, false
+}
+
+func selectorValuesIntersect(selector, traceValue, ruleValue string) bool {
+	if selector == "-p" {
+		return strings.EqualFold(traceValue, ruleValue)
+	}
+	host := net.ParseIP(traceValue)
+	if host == nil {
+		return traceValue == ruleValue
+	}
+	if networkIP := net.ParseIP(ruleValue); networkIP != nil {
+		return host.Equal(networkIP)
+	}
+	_, network, err := net.ParseCIDR(ruleValue)
+	return err == nil && network.Contains(host)
+}
+
+func ruleMatchFilter(rule string) string {
+	ruleFilter := ruleFilterRe.FindStringSubmatch(rule)
+	if ruleFilter == nil {
+		return ""
+	}
+	return ruleFilter[1]
 }
 
 func resolveRuleFilterAndMergeMark(rule string, fwMark int) ([]string, bool) {
