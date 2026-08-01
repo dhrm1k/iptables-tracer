@@ -56,7 +56,7 @@ func TestExtendIptablesPolicyFilters(t *testing.T) {
 	}
 
 	gotPolicy, gotRuleMap, gotMaxLength := extendIptablesPolicyFilters(
-		policy, 7, []string{"-s 10.1.50.11 -p icmp", "-d 10.1.50.11 -p icmp"}, 0, 0, false, 22,
+		policy, 7, []string{"-s 10.1.50.11 -p icmp", "-d 10.1.50.11 -p icmp"}, 0, 0, false, true, 22,
 	)
 	if !cmp.Equal(gotPolicy, expectedPolicy) {
 		t.Errorf("extendIptablesPolicyFilters() policy = %q, expected %q", gotPolicy, expectedPolicy)

@@ -19,11 +19,11 @@ var (
 	ruleFilterMarkRe = regexp.MustCompile(`(!\s+)?--mark\s+\S+`)
 )
 
-func extendIptablesPolicy(lines []string, traceID int, traceFilter string, fwMark, packetLimit int, traceRules bool, nflogGroup int) ([]string, map[int]iptablesRule, int) {
-	return extendIptablesPolicyFilters(lines, traceID, []string{traceFilter}, fwMark, packetLimit, traceRules, nflogGroup)
+func extendIptablesPolicy(lines []string, traceID int, traceFilter string, fwMark, packetLimit int, traceRules, traceChains bool, nflogGroup int) ([]string, map[int]iptablesRule, int) {
+	return extendIptablesPolicyFilters(lines, traceID, []string{traceFilter}, fwMark, packetLimit, traceRules, traceChains, nflogGroup)
 }
 
-func extendIptablesPolicyFilters(lines []string, traceID int, traceFilters []string, fwMark, packetLimit int, traceRules bool, nflogGroup int) ([]string, map[int]iptablesRule, int) {
+func extendIptablesPolicyFilters(lines []string, traceID int, traceFilters []string, fwMark, packetLimit int, traceRules, traceChains bool, nflogGroup int) ([]string, map[int]iptablesRule, int) {
 	var newIptablesConfig []string
 	maxChainNameLength := 0
 	ruleMap := make(map[int]iptablesRule)
@@ -47,14 +47,20 @@ func extendIptablesPolicyFilters(lines []string, traceID int, traceFilters []str
 			}
 		}
 		if res := commitRe.FindStringSubmatch(line); res != nil {
-			// we are at the end of a table, add aritificial rules for all chains in this table
+			// We are at the end of a table; add the requested probes to its chains.
 			for _, chain := range chainMap[table] {
-				for _, traceFilter := range traceFilters {
-					ruleMap[ruleIndex] = iptablesRule{Table: table, Chain: chain, ChainEntry: true}
-					traceRule := buildTraceRule("-I", chain, []string{traceFilter, markFilter}, traceID, ruleIndex, nflogGroup)
-					ruleIndex++
-					newIptablesConfig = append(newIptablesConfig, traceRule)
-					if table == "raw" && chain == "PREROUTING" && fwMark != 0 && (packetLimit != 0 || traceRules) {
+				if traceChains {
+					for _, traceFilter := range traceFilters {
+						ruleMap[ruleIndex] = iptablesRule{Table: table, Chain: chain, ChainEntry: true}
+						traceRule := buildTraceRule("-I", chain, []string{traceFilter, markFilter}, traceID, ruleIndex, nflogGroup)
+						ruleIndex++
+						newIptablesConfig = append(newIptablesConfig, traceRule)
+						if table == "raw" && chain == "PREROUTING" && fwMark != 0 && (packetLimit != 0 || traceRules) {
+							newIptablesConfig = append(newIptablesConfig, buildMarkRule("-I", chain, traceFilter, traceID, packetLimit, fwMark))
+						}
+					}
+				} else if table == "raw" && chain == "PREROUTING" && fwMark != 0 && (packetLimit != 0 || traceRules) {
+					for _, traceFilter := range traceFilters {
 						newIptablesConfig = append(newIptablesConfig, buildMarkRule("-I", chain, traceFilter, traceID, packetLimit, fwMark))
 					}
 				}
@@ -69,7 +75,7 @@ func extendIptablesPolicyFilters(lines []string, traceID int, traceFilters []str
 			}
 			if fwMark == 0 {
 				for _, traceFilter := range traceFilters {
-					resolvedFilter, ok := resolveHostRuleFilter(traceFilter, ruleMatchFilter(res[2]))
+					resolvedFilter, ok := resolveTraceRuleFilter(traceFilter, ruleMatchFilter(res[2]))
 					if !ok {
 						continue
 					}
@@ -139,15 +145,15 @@ func buildTraceRule(command, chain string, filter []string, traceID, ruleIndex, 
 	return strings.Join(rule, " ")
 }
 
-func resolveHostRuleFilter(traceFilter, ruleFilter string) (string, bool) {
+func resolveTraceRuleFilter(traceFilter, ruleFilter string) (string, bool) {
 	traceFields := strings.Fields(traceFilter)
 	ruleFields := strings.Fields(ruleFilter)
-	for _, selector := range []string{"-s", "-d", "-p"} {
-		traceValue, traceIndex, traceNegated := findSelector(traceFields, selector)
-		if traceIndex < 0 || traceNegated {
+	for _, selector := range []string{"-s", "-d", "-p", "-i", "-o", "--sport", "--dport", "--icmp-type"} {
+		traceValue, _, traceNegated := findSelector(traceFields, selector)
+		if traceValue == "" || traceNegated {
 			continue
 		}
-		ruleValue, _, ruleNegated := findSelector(ruleFields, selector)
+		ruleValue, ruleIndex, ruleNegated := findSelector(ruleFields, selector)
 		if ruleValue == "" {
 			continue
 		}
@@ -159,15 +165,21 @@ func resolveHostRuleFilter(traceFilter, ruleFilter string) (string, bool) {
 		if !matches {
 			return "", false
 		}
-		if !ruleNegated {
-			traceFields = append(traceFields[:traceIndex], traceFields[traceIndex+2:]...)
+		removeFrom := ruleIndex
+		if ruleNegated {
+			removeFrom--
 		}
+		ruleFields = append(ruleFields[:removeFrom], ruleFields[ruleIndex+2:]...)
 	}
-	return strings.TrimSpace(strings.Join(append(traceFields, ruleFilter), " ")), true
+	return strings.TrimSpace(strings.Join(append(traceFields, ruleFields...), " ")), true
 }
 
 func findSelector(fields []string, selector string) (string, int, bool) {
-	aliases := map[string]string{"--source": "-s", "--destination": "-d", "--protocol": "-p"}
+	aliases := map[string]string{
+		"--source": "-s", "--destination": "-d", "--protocol": "-p",
+		"--in-interface": "-i", "--out-interface": "-o",
+		"--source-port": "--sport", "--destination-port": "--dport",
+	}
 	for i, field := range fields {
 		if alias, ok := aliases[field]; ok {
 			field = alias

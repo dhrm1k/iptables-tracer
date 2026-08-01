@@ -359,7 +359,7 @@ func TestExtendIptablesPolicy(t *testing.T) {
 	}
 
 	for _, table := range tables {
-		gotPolicy, gotRuleMap, gotMaxLength := extendIptablesPolicy(table.policy, table.traceID, table.traceFilter, table.fwMark, table.packetLimit, table.traceRules, table.nflogGroup)
+		gotPolicy, gotRuleMap, gotMaxLength := extendIptablesPolicy(table.policy, table.traceID, table.traceFilter, table.fwMark, table.packetLimit, table.traceRules, true, table.nflogGroup)
 		if !cmp.Equal(gotPolicy, table.expectedPolicy) {
 			t.Errorf("clearIptablesPolicy returned policy was incorrect, got: '%s', expected: '%s'", gotPolicy, table.expectedPolicy)
 		}

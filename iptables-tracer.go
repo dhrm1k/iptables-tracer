@@ -53,7 +53,8 @@ var (
 	traceFilter    = flag.String("f", "-p udp --dport 53", "trace filter (iptables match syntax)")
 	traceHost      = flag.String("host", "", "trace traffic to and from this IP address")
 	traceID        = flag.Int("i", 0, "trace id (0 = use PID)")
-	traceRules     = flag.Bool("r", false, "trace matching rules in addition to chain entries")
+	traceRules     = flag.Bool("r", false, "deprecated: matching-rule path tracing is now the default")
+	traceAll       = flag.Bool("all", false, "include chain entries in addition to the matching path")
 	clearRules     = flag.Bool("c", false, "clear all iptables-tracer iptables rules from running config")
 	fwMark         = flag.Int("m", 0, "fwmark to use for packet tracking")
 	packetLimit    = flag.Int("l", 0, "limit of packets per minute to trace (0 = no limit)")
@@ -91,9 +92,6 @@ func run() error {
 	if *packetLimit != 0 && *fwMark == 0 {
 		return errors.New("packet limit requires fwmark")
 	}
-	if *traceRules && *fwMark == 0 && *traceHost == "" {
-		return errors.New("rule tracing requires --host or fwmark")
-	}
 
 	filterExplicit := false
 	flag.Visit(func(f *flag.Flag) {
@@ -114,7 +112,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	newIptablesConfig, ruleMap, maxLength := extendIptablesPolicyFilters(lines, *traceID, traceFilters, *fwMark, *packetLimit, *traceRules, *nflogGroup)
+	newIptablesConfig, ruleMap, maxLength := extendIptablesPolicyFilters(lines, *traceID, traceFilters, *fwMark, *packetLimit, true, *traceAll, *nflogGroup)
 	if err := iptablesRestore(newIptablesConfig); err != nil {
 		return err
 	}

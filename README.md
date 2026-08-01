@@ -31,23 +31,22 @@ $ iptables-tracer --host 10.1.50.11 -f "-p icmp" -t 30s
 
 When `--host` is used without `-f`, all protocols to or from that IP address are traced. Without `--host`, the default filter remains UDP port 53.
 
-Add `-r` to distinguish chain traversal from matching rules:
+By default, the tracer prints the actual matching-rule path. Each `MATCH` record means the packet satisfied the displayed rule; its target shows a jump or a verdict such as `ACCEPT`, `DROP`, or `REJECT`.
+
+Add `--all` to include every entered chain as well:
 
 ```sh
-$ iptables-tracer --host 10.1.50.11 -f "-p icmp" -r -t 30s
+$ iptables-tracer --host 10.1.50.11 -f "-p icmp" --all -t 30s
 ```
 
-Output records are labelled as follows:
+In `--all` output, `ENTER` means the packet entered the named chain. It does not mean that an `ACCEPT`, `DROP`, or `REJECT` rule inside that chain matched.
 
-- `ENTER` means the packet entered the named chain.
-- `MATCH` means the packet satisfied the displayed rule. The rule target shows a jump or a verdict such as `ACCEPT`, `DROP`, or `REJECT`.
-
-Host-scoped rule tracing does not alter packet marks. It adds temporary NFLOG probes ahead of existing rules and can produce substantially more output than chain-only tracing.
+Path tracing adds temporary NFLOG probes immediately before existing rules. `--all` adds chain-entry probes and can produce substantially more output. Host-scoped tracing does not alter packet marks.
 
 An explicit iptables filter can also be used directly:
 
 ```
-$ iptables-tracer -f "-s 192.0.2.1 -p tcp --dport 443" -t 30s
+$ iptables-tracer -f "-s 192.0.2.1 -p tcp --dport 443" --all -t 30s
 14:42:00.284882 raw    ENTER PREROUTING   0x00000000 IP 192.0.2.1.36028 > 203.0.113.41.443: Flags [S], seq 3964691400, win 29200, length 0  [In:eth0 Out:]
 14:42:00.287255 mangle ENTER PREROUTING   0x00008000 IP 192.0.2.1.36028 > 203.0.113.41.443: Flags [S], seq 3964691400, win 29200, length 0  [In:eth0 Out:]
 14:42:00.288966 nat    ENTER PREROUTING   0x00008000 IP 192.0.2.1.36028 > 203.0.113.41.443: Flags [S], seq 3964691400, win 29200, length 0  [In:eth0 Out:]
